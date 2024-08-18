@@ -109,6 +109,7 @@ class SlurmProvider(ClusterProvider, RepresentationMixin):
                  nodes_per_block: int = 1,
                  cores_per_node: Optional[int] = None,
                  mem_per_node: Optional[int] = None,
+                 tasks_per_node: int = 1,
                  init_blocks: int = 1,
                  min_blocks: int = 0,
                  max_blocks: int = 1,
@@ -136,6 +137,7 @@ class SlurmProvider(ClusterProvider, RepresentationMixin):
         self.partition = partition
         self.cores_per_node = cores_per_node
         self.mem_per_node = mem_per_node
+        self.tasks_per_node = tasks_per_node
         self.exclusive = exclusive
         self.move_files = move_files
         self.account = account
@@ -233,8 +235,8 @@ class SlurmProvider(ClusterProvider, RepresentationMixin):
             scheduler_options += '#SBATCH --mem={}g\n'.format(self.mem_per_node)
             worker_init += 'export PARSL_MEMORY_GB={}\n'.format(self.mem_per_node)
         if self.cores_per_node is not None:
-            cpus_per_task = math.floor(self.cores_per_node / tasks_per_node)
-            scheduler_options += '#SBATCH --cpus-per-task={}'.format(cpus_per_task)
+            cpus_per_task = math.floor(self.cores_per_node / self.tasks_per_node)
+            # scheduler_options += '#SBATCH --cpus-per-task={}'.format(cpus_per_task)
             worker_init += 'export PARSL_CORES={}\n'.format(cpus_per_task)
 
         job_name = "{0}.{1}".format(job_name, time.time())
@@ -250,7 +252,7 @@ class SlurmProvider(ClusterProvider, RepresentationMixin):
         job_config = {}
         job_config["submit_script_dir"] = self.channel.script_dir
         job_config["nodes"] = self.nodes_per_block
-        job_config["tasks_per_node"] = tasks_per_node
+        job_config["tasks_per_node"] = self.tasks_per_node
         job_config["walltime"] = wtime_to_minutes(self.walltime)
         job_config["scheduler_options"] = scheduler_options
         job_config["worker_init"] = worker_init
@@ -260,7 +262,7 @@ class SlurmProvider(ClusterProvider, RepresentationMixin):
 
         # Wrap the command
         job_config["user_script"] = self.launcher(command,
-                                                  tasks_per_node,
+                                                  self.tasks_per_node,
                                                   self.nodes_per_block)
 
         logger.debug("Writing submit script")

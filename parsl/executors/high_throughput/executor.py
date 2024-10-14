@@ -16,15 +16,16 @@ from parsl import curvezmq
 from parsl.addresses import get_all_addresses
 from parsl.app.errors import RemoteExceptionWrapper
 from parsl.data_provider.staging import Staging
-from parsl.executors.errors import BadMessage, ScalingFailed
+from parsl.executors.errors import (
+    BadMessage,
+    InvalidResourceSpecification,
+    ScalingFailed,
+)
 from parsl.executors.high_throughput import zmq_pipes
 from parsl.executors.high_throughput.errors import CommandClientTimeoutError
 from parsl.executors.high_throughput.manager_selector import (
     ManagerSelector,
     RandomManagerSelector,
-)
-from parsl.executors.high_throughput.mpi_prefix_composer import (
-    InvalidResourceSpecification,
 )
 from parsl.executors.status_handling import BlockProviderExecutor
 from parsl.jobs.states import TERMINAL_STATES, JobState, JobStatus
@@ -199,9 +200,6 @@ class HighThroughputExecutor(BlockProviderExecutor, RepresentationMixin, UsageIn
         will check the available memory at startup and limit the number of workers such that
         the there's sufficient memory for each worker. Default: None
 
-    max_workers : int
-        Deprecated. Please use max_workers_per_node instead.
-
     max_workers_per_node : int
         Caps the number of workers launched per node. Default: None
 
@@ -239,7 +237,6 @@ class HighThroughputExecutor(BlockProviderExecutor, RepresentationMixin, UsageIn
                  worker_debug: bool = False,
                  cores_per_worker: float = 1.0,
                  mem_per_worker: Optional[float] = None,
-                 max_workers: Optional[Union[int, float]] = None,
                  max_workers_per_node: Optional[Union[int, float]] = None,
                  cpu_affinity: str = 'none',
                  available_accelerators: Union[int, Sequence[str]] = (),
@@ -272,9 +269,7 @@ class HighThroughputExecutor(BlockProviderExecutor, RepresentationMixin, UsageIn
         else:
             self.all_addresses = ','.join(get_all_addresses())
 
-        if max_workers:
-            self._warn_deprecated("max_workers", "max_workers_per_node")
-        self.max_workers_per_node = max_workers_per_node or max_workers or float("inf")
+        self.max_workers_per_node = max_workers_per_node or float("inf")
 
         mem_slots = self.max_workers_per_node
         cpu_slots = self.max_workers_per_node
@@ -334,16 +329,6 @@ class HighThroughputExecutor(BlockProviderExecutor, RepresentationMixin, UsageIn
             DeprecationWarning,
             stacklevel=2
         )
-
-    @property
-    def max_workers(self):
-        self._warn_deprecated("max_workers", "max_workers_per_node")
-        return self.max_workers_per_node
-
-    @max_workers.setter
-    def max_workers(self, val: Union[int, float]):
-        self._warn_deprecated("max_workers", "max_workers_per_node")
-        self.max_workers_per_node = val
 
     @property
     def logdir(self):
@@ -475,9 +460,7 @@ class HighThroughputExecutor(BlockProviderExecutor, RepresentationMixin, UsageIn
                     except pickle.UnpicklingError:
                         raise BadMessage("Message received could not be unpickled")
 
-                    if msg['type'] == 'heartbeat':
-                        continue
-                    elif msg['type'] == 'result':
+                    if msg['type'] == 'result':
                         try:
                             tid = msg['task_id']
                         except Exception:
@@ -597,7 +580,7 @@ class HighThroughputExecutor(BlockProviderExecutor, RepresentationMixin, UsageIn
     def outstanding(self) -> int:
         """Returns the count of tasks outstanding across the interchange
         and managers"""
-        return self.command_client.run("OUTSTANDING_C")
+        return len(self.tasks)
 
     @property
     def connected_workers(self) -> int:
@@ -790,7 +773,8 @@ class HighThroughputExecutor(BlockProviderExecutor, RepresentationMixin, UsageIn
         connected_blocks = self.connected_blocks()
         for job_id in job_status:
             job_info = job_status[job_id]
-            if job_info.terminal and job_id not in connected_blocks:
+            if job_info.terminal and job_id not in connected_blocks and job_info.state != JobState.SCALED_IN:
+                logger.debug("Rewriting job %s from status %s to MISSING", job_id, job_info)
                 job_status[job_id].state = JobState.MISSING
                 if job_status[job_id].message is None:
                     job_status[job_id].message = (
